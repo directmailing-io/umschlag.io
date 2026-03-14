@@ -10,7 +10,7 @@ import sheetsRoutes from "./routes/sheetsRoutes.js";
 dotenv.config();
 
 const app = express();
-const PORT = 5656;
+const PORT = process.env.PORT || 5656;
 
 app.use(cors());
 app.use("/api/sheets", sheetsRoutes);

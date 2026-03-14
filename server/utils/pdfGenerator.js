@@ -108,10 +108,18 @@ export async function generateEnvelopePDF(recipients, template, mapping, onProgr
   const vpW = Math.ceil(W * PX_PER_MM);
   const vpH = Math.ceil(H * PX_PER_MM);
 
+  // On macOS (local dev): use installed Chrome.
+  // On Linux (Railway/server): use Puppeteer's bundled Chromium (executablePath = undefined).
+  const executablePath =
+    process.env.PUPPETEER_EXECUTABLE_PATH ||
+    (process.platform === "darwin"
+      ? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+      : undefined);
+
   const browser = await puppeteer.launch({
-    executablePath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    headless: "new",
-    args: ["--no-sandbox", "--disable-setuid-sandbox"],
+    executablePath,
+    headless: true,
+    args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
   });
 
   try {

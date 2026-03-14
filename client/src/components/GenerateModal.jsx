@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import * as XLSX from "xlsx";
 
-const API = "http://localhost:5656/api";
+const API = (import.meta.env.VITE_API_URL || "http://localhost:5656") + "/api";
 
 function extractPlaceholders(template) {
   const set = new Set();

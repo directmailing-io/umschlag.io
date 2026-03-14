@@ -1,4 +1,4 @@
-const BASE = "http://localhost:5656/api";
+const BASE = (import.meta.env.VITE_API_URL || "http://localhost:5656") + "/api";
 
 export async function fetchTemplates() {
   const res = await fetch(`${BASE}/templates`);
