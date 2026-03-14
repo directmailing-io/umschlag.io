@@ -19,7 +19,7 @@ app.use(cors());
 // Serve fonts as static files — Puppeteer loads them via HTTP (avoids 24MB base64 payload)
 app.use("/fonts", express.static(path.join(__dirname, "fonts")));
 app.use("/api/sheets", sheetsRoutes);
-app.use(express.json());
+app.use(express.json({ limit: "50mb" }));
 app.use("/api/pdf", pdfRoutes);
 
 async function connectDB() {
