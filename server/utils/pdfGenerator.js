@@ -1,11 +1,5 @@
 import puppeteer from "puppeteer";
-import path from "path";
-import fs from "fs";
-import { fileURLToPath } from "url";
 import { PDFDocument } from "pdf-lib";
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const FONTS_DIR = path.join(__dirname, "..", "fonts");
 
 const SIZES = {
   DIN_LANG: { width: 220, height: 110 },
@@ -20,15 +14,16 @@ const FONT_FILES = {
   BiroScript:          { file: "biro_script_plus.ttf",                  format: "truetype" },
 };
 
+// Fonts are served via HTTP from the same Express server.
+// Puppeteer (running on the same host) loads them via localhost — no base64 needed,
+// which prevents the ~24 MB payload that was causing CDP timeouts.
 function buildFontFaceCSS() {
+  const port = process.env.PORT || 5656;
+  const base  = `http://localhost:${port}/fonts`;
   return Object.entries(FONT_FILES)
-    .map(([name, { file, format }]) => {
-      const filePath = path.join(FONTS_DIR, file);
-      if (!fs.existsSync(filePath)) return "";
-      const b64 = fs.readFileSync(filePath).toString("base64");
-      const mime = format === "opentype" ? "font/otf" : "font/ttf";
-      return `@font-face { font-family: '${name}'; src: url('data:${mime};base64,${b64}') format('${format}'); font-display: block; }`;
-    })
+    .map(([name, { file, format }]) =>
+      `@font-face { font-family: '${name}'; src: url('${base}/${file}') format('${format}'); font-display: block; }`
+    )
     .join("\n");
 }
 
@@ -137,9 +132,8 @@ export async function generateEnvelopePDF(recipients, template, mapping, onProgr
 
     for (let i = 0; i < recipients.length; i++) {
       const html = buildEnvelopeHtml(recipients[i], fields, mapping, W, H, fontFaceCSS);
-      await chromePage.setContent(html, { waitUntil: "load", timeout: 30000 });
-      // Wait for color fonts to fully render
-      await new Promise((r) => setTimeout(r, 400));
+      // networkidle0 waits until fonts are fully downloaded before screenshot
+      await chromePage.setContent(html, { waitUntil: "networkidle0", timeout: 30000 });
 
       const screenshot = await chromePage.screenshot({ type: "png" });
 

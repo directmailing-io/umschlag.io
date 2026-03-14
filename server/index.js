@@ -2,10 +2,13 @@ import express from "express";
 import cors from "cors";
 import mongoose from "mongoose";
 import dotenv from "dotenv";
+import path from "path";
+import { fileURLToPath } from "url";
 import templateRoutes from "./routes/templateRoutes.js";
 import pdfRoutes from "./routes/pdfRoutes.js";
 import sheetsRoutes from "./routes/sheetsRoutes.js";
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 dotenv.config();
 
@@ -13,6 +16,8 @@ const app = express();
 const PORT = process.env.PORT || 5656;
 
 app.use(cors());
+// Serve fonts as static files — Puppeteer loads them via HTTP (avoids 24MB base64 payload)
+app.use("/fonts", express.static(path.join(__dirname, "fonts")));
 app.use("/api/sheets", sheetsRoutes);
 app.use(express.json());
 app.use("/api/pdf", pdfRoutes);
