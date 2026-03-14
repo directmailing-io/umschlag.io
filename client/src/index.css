@@ -1,0 +1,36 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Roboto:wght@400;500;700&family=Montserrat:wght@400;500;600;700&display=swap');
+
+@font-face {
+  font-family: 'LiebeHeide';
+  src: url('/fonts/LiebeHeide-Color.otf') format('opentype');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'LiebeHeideFineliner';
+  src: url('/fonts/LiebeHeideVector-FinelinerRegular.otf') format('opentype');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'BiroScript';
+  src: url('/fonts/biro_script_plus.ttf') format('truetype');
+  font-display: swap;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  background: #f4f4f6;
+  color: #111;
+  -webkit-font-smoothing: antialiased;
+}
+
+input, select, textarea, button {
+  font-family: inherit;
+}
+
+input:focus, select:focus, textarea:focus {
+  outline: 2px solid #2563eb;
+  outline-offset: 0;
+  border-color: #2563eb !important;
+}

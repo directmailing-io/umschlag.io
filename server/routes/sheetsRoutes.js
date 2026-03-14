@@ -1,0 +1,61 @@
+import express from "express";
+import { parse } from "csv-parse/sync";
+
+const router = express.Router();
+
+router.get("/load", async (req, res) => {
+  try {
+    const { url } = req.query;
+    if (!url) {
+      return res.status(400).json({ error: "No URL provided" });
+    }
+
+    // 1. Sheets ID extrahieren
+    const match = url.match(/\/d\/([a-zA-Z0-9-_]+)/);
+    if (!match) {
+      return res.status(400).json({ error: "Invalid Google Sheets URL" });
+    }
+    const sheetId = match[1];
+
+    // 2. Saubere CSV Export URL erzeugen
+    const csvUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv`;
+
+    // 3. CSV laden (Node 20: fetch ist nativ)
+    const response = await fetch(csvUrl);
+
+    if (!response.ok) {
+      return res.status(500).json({ error: "Google returned an error" });
+    }
+
+    const contentType = response.headers.get("content-type") || "";
+    if (contentType.includes("text/html")) {
+      return res.status(500).json({
+        error: "Google Sheets returned HTML instead of CSV. Make sure the sheet is public."
+      });
+    }
+
+    const text = await response.text();
+
+    // 4. CSV → JSON
+    let records = [];
+    try {
+      records = parse(text, {
+        columns: true,
+        skip_empty_lines: true
+      });
+    } catch (e) {
+      return res.status(500).json({
+        error: "CSV parsing failed",
+        details: e.message
+      });
+    }
+
+    return res.json(records);
+
+  } catch (err) {
+    console.error("Sheets Error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+export default router;
