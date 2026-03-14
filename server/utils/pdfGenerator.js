@@ -132,8 +132,10 @@ export async function generateEnvelopePDF(recipients, template, mapping, onProgr
 
     for (let i = 0; i < recipients.length; i++) {
       const html = buildEnvelopeHtml(recipients[i], fields, mapping, W, H, fontFaceCSS);
-      // networkidle0 waits until fonts are fully downloaded before screenshot
-      await chromePage.setContent(html, { waitUntil: "networkidle0", timeout: 30000 });
+      // "load" fires after all resources (fonts, etc.) are fetched
+      await chromePage.setContent(html, { waitUntil: "load", timeout: 60000 });
+      // Short wait for color font rendering to complete
+      await new Promise((r) => setTimeout(r, 300));
 
       const screenshot = await chromePage.screenshot({ type: "png" });
 
