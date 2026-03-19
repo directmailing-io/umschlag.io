@@ -13,9 +13,16 @@ function extractPlaceholders(template) {
   return [...set];
 }
 
-export default function GenerateModal({ templates, onClose }) {
-  const [step, setStep]                     = useState(1);
-  const [selectedTemplate, setTemplate]     = useState(null);
+export default function GenerateModal({ templates, onClose, lockedTemplate, embedded }) {
+  const [step, setStep]                     = useState(lockedTemplate ? 2 : 1);
+  const [selectedTemplate, setTemplate]     = useState(() => {
+    if (lockedTemplate) {
+      const m = {};
+      extractPlaceholders(lockedTemplate).forEach(p => { m[p] = ""; });
+      return lockedTemplate;
+    }
+    return null;
+  });
   // Data source: "excel" | "sheets"
   const [dataSource, setDataSource]         = useState("excel");
   // Shared workbook (populated by either Excel upload OR Google Sheets XLSX fetch)
@@ -29,7 +36,12 @@ export default function GenerateModal({ templates, onClose }) {
   // columns/rows come from first selected sheet — used for mapping + preview
   const [columns, setColumns]               = useState([]);
   const [previewRows, setPreviewRows]       = useState([]);
-  const [mapping, setMapping]               = useState({});
+  const [mapping, setMapping]               = useState(() => {
+    if (!lockedTemplate) return {};
+    const m = {};
+    extractPlaceholders(lockedTemplate).forEach(p => { m[p] = ""; });
+    return m;
+  });
   // conditions: { [placeholderKey]: { rules: [{operator,when,then}], useDefault, default } }
   const [conditions, setConditions]         = useState({});
   const [expandedCondition, setExpandedCondition] = useState(null);
@@ -280,9 +292,11 @@ export default function GenerateModal({ templates, onClose }) {
   const allDone = jobs.length > 0 && jobs.every(j => j.status === "done" || j.status === "error");
 
   return (
-    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)",
+    <div style={embedded ? { display: "contents" } : {
+      position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)",
       display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000,
-      padding: "8px" }}>
+      padding: "8px",
+    }}>
       <style>{`
         @keyframes spin { to { transform: rotate(360deg); } }
         .gm-close { position: absolute; top: 16px; right: 16px; background: none; border: none;
@@ -301,13 +315,15 @@ export default function GenerateModal({ templates, onClose }) {
         }
       `}</style>
       <div className="gm-modal" style={{ background: "#fff", borderRadius: 16,
-        width: "min(620px, 100%)", maxHeight: "min(90dvh, calc(100dvh - 16px))",
-        overflow: "auto", padding: "clamp(20px, 5%, 36px)", position: "relative",
-        boxShadow: "0 24px 64px rgba(0,0,0,0.22)" }}>
+        width: embedded ? "100%" : "min(620px, 100%)",
+        maxHeight: embedded ? "none" : "min(90dvh, calc(100dvh - 16px))",
+        overflow: embedded ? "visible" : "auto",
+        padding: "clamp(20px, 5%, 36px)", position: "relative",
+        boxShadow: embedded ? "0 4px 20px rgba(0,0,0,0.10)" : "0 24px 64px rgba(0,0,0,0.22)" }}>
 
-        <button onClick={onClose} className="gm-close">✕</button>
+        {!embedded && <button onClick={onClose} className="gm-close">✕</button>}
 
-        <StepBar step={step} />
+        <StepBar step={step} lockedTemplate={lockedTemplate} />
 
         {/* ── STEP 1: Template ─────────────────────────────── */}
         {step === 1 && (
@@ -863,12 +879,16 @@ function JobProgress({ job }) {
   );
 }
 
-function StepBar({ step }) {
-  const steps = [["1","Vorlage"],["2","Daten"],["3","Mapping"],["4","PDF"]];
+function StepBar({ step, lockedTemplate }) {
+  // When locked to a template, step 1 is skipped — show steps 2-4 only
+  const steps = lockedTemplate
+    ? [["2","Daten"],["3","Mapping"],["4","PDF"]]
+    : [["1","Vorlage"],["2","Daten"],["3","Mapping"],["4","PDF"]];
   return (
     <div style={{ display: "flex", gap: 6, marginBottom: 24 }}>
-      {steps.map(([n, label], i) => {
-        const done = step > i + 1, active = step === i + 1;
+      {steps.map(([n, label]) => {
+        const num = parseInt(n);
+        const done = step > num, active = step === num;
         return (
           <div key={n} style={{ flex: 1, textAlign: "center" }}>
             <div style={{ width: 30, height: 30, borderRadius: "50%", margin: "0 auto 4px",

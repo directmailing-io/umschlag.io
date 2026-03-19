@@ -31,3 +31,9 @@ export async function deleteTemplate(id) {
   if (!res.ok) throw new Error("Löschen fehlgeschlagen");
   return res.json();
 }
+
+export async function fetchTemplate(id) {
+  const res = await fetch(`${BASE}/templates/${id}`);
+  if (!res.ok) throw new Error("Vorlage nicht gefunden");
+  return res.json();
+}

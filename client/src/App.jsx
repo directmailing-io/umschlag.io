@@ -1,9 +1,81 @@
 import { useState, useEffect } from "react";
 import EnvelopeDesigner from "./components/EnvelopeDesigner";
 import GenerateModal from "./components/GenerateModal";
-import { fetchTemplates, deleteTemplate } from "./api/templates";
+import { fetchTemplates, fetchTemplate, deleteTemplate } from "./api/templates";
 
 export default function App() {
+  const shareId = new URLSearchParams(window.location.search).get("share");
+
+  if (shareId) {
+    return <SharedView templateId={shareId} />;
+  }
+
+  return <MainApp />;
+}
+
+// ── Shared link view (read-only, single template) ─────────────────────────────
+function SharedView({ templateId }) {
+  const [template, setTemplate] = useState(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    fetchTemplate(templateId)
+      .then(setTemplate)
+      .catch(() => setError("Vorlage nicht gefunden oder nicht mehr verfügbar."));
+  }, [templateId]);
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#f4f4f6", fontFamily: "Inter, system-ui, sans-serif" }}>
+      <header style={{
+        background: "#fff",
+        borderBottom: "1px solid #e5e7eb",
+        padding: "0 28px",
+        display: "flex",
+        alignItems: "center",
+        gap: 12,
+        height: 56,
+        position: "sticky",
+        top: 0,
+        zIndex: 100,
+      }}>
+        <span style={{ fontSize: 22 }}>✉️</span>
+        <span style={{ fontWeight: 800, fontSize: 18, letterSpacing: "-0.5px" }}>umschlag.io</span>
+        {template && (
+          <>
+            <span style={{ color: "#d1d5db", fontSize: 18 }}>/</span>
+            <span style={{ fontWeight: 600, fontSize: 14, color: "#374151" }}>{template.name}</span>
+          </>
+        )}
+      </header>
+
+      <main style={{ padding: "32px 28px", maxWidth: 680, margin: "0 auto" }}>
+        {error ? (
+          <div style={{
+            background: "#fef2f2", border: "1.5px solid #fecaca", borderRadius: 12,
+            padding: "20px 24px", color: "#dc2626", fontWeight: 600,
+          }}>
+            ⚠ {error}
+          </div>
+        ) : !template ? (
+          <div style={{ textAlign: "center", color: "#9ca3af", paddingTop: 60 }}>
+            <div style={{ fontSize: 32, marginBottom: 12 }}>⏳</div>
+            <div>Vorlage wird geladen…</div>
+          </div>
+        ) : (
+          <GenerateModal
+            templates={[template]}
+            lockedTemplate={template}
+            embedded={true}
+            onClose={() => {}}
+          />
+        )}
+      </main>
+    </div>
+  );
+}
+
+// ── Main app ──────────────────────────────────────────────────────────────────
+function MainApp() {
   const [tab, setTab] = useState("designer"); // "designer" | "templates"
   const [templates, setTemplates] = useState([]);
   const [showGenerate, setShowGenerate] = useState(false);
@@ -124,6 +196,19 @@ export default function App() {
 }
 
 function TemplatesView({ templates, onLoad, onDelete }) {
+  const [copiedId, setCopiedId] = useState(null);
+
+  function handleShare(templateId) {
+    const url = `${window.location.origin}${window.location.pathname}?share=${templateId}`;
+    navigator.clipboard.writeText(url).then(() => {
+      setCopiedId(templateId);
+      setTimeout(() => setCopiedId(null), 2000);
+    }).catch(() => {
+      // Fallback for browsers without clipboard API
+      prompt("Link kopieren:", url);
+    });
+  }
+
   if (templates.length === 0) {
     return (
       <div style={{ textAlign: "center", padding: 80, color: "#9ca3af" }}>
@@ -185,6 +270,24 @@ function TemplatesView({ templates, onLoad, onDelete }) {
                 cursor: "pointer",
               }}>
                 Im Designer öffnen
+              </button>
+              <button
+                onClick={() => handleShare(t._id)}
+                title="Share-Link kopieren"
+                style={{
+                  padding: "8px 12px",
+                  background: copiedId === t._id ? "#dcfce7" : "#eff6ff",
+                  color: copiedId === t._id ? "#16a34a" : "#2563eb",
+                  border: "none",
+                  borderRadius: 8,
+                  fontWeight: 600,
+                  fontSize: 13,
+                  cursor: "pointer",
+                  transition: "all .2s",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {copiedId === t._id ? "✓ Kopiert" : "🔗 Teilen"}
               </button>
               <button onClick={() => onDelete(t._id)} style={{
                 padding: "8px 12px",
