@@ -16,11 +16,32 @@ const SIZES = {
 // Envelopes per Puppeteer pdf() call — keeps Chrome memory stable
 const BATCH_SIZE = 150;
 
-function resolveContent(content, recipient, mapping) {
+function applyConditions(value, rule) {
+  if (!rule || !rule.rules || rule.rules.length === 0) return value;
+  const lv = value.toLowerCase();
+  for (const r of rule.rules) {
+    if (!r.when) continue;
+    const lw = r.when.toLowerCase();
+    let match = false;
+    switch (r.operator) {
+      case "equals":     match = lv === lw; break;
+      case "contains":   match = lv.includes(lw); break;
+      case "startsWith": match = lv.startsWith(lw); break;
+      case "endsWith":   match = lv.endsWith(lw); break;
+      default:           match = lv === lw;
+    }
+    if (match) return r.then ?? "";
+  }
+  return rule.useDefault ? (rule.default || "") : value;
+}
+
+function resolveContent(content, recipient, mapping, conditions = {}) {
   if (!content) return "";
   return content.replace(/\{\{([^}]+)\}\}/g, (_, key) => {
-    const col = mapping[key.trim()];
-    return col ? String(recipient[col] ?? "") : "";
+    const k   = key.trim();
+    const col = mapping[k];
+    const raw = col ? String(recipient[col] ?? "") : "";
+    return applyConditions(raw, conditions[k]);
   });
 }
 
@@ -32,7 +53,7 @@ function escapeHtml(str) {
     .replace(/"/g, "&quot;");
 }
 
-function buildBatchHtml(batch, fields, mapping, W, H) {
+function buildBatchHtml(batch, fields, mapping, conditions, W, H) {
   const port = process.env.PORT || 5656;
   const fontFaceCSS = [
     `@font-face { font-family: 'LiebeHeide'; src: url('http://localhost:${port}/fonts/LiebeHeide-Color.otf') format('opentype'); font-display: block; }`,
@@ -45,10 +66,11 @@ function buildBatchHtml(batch, fields, mapping, W, H) {
     const fieldDivs = fields.map(field => {
       let text = "";
       if (field.content !== undefined) {
-        text = resolveContent(field.content, recipient, mapping);
+        text = resolveContent(field.content, recipient, mapping, conditions);
       } else if (field.isPlaceholder) {
         const col = mapping[field.label];
-        text = col ? String(recipient[col] ?? "") : "";
+        const raw = col ? String(recipient[col] ?? "") : "";
+        text = applyConditions(raw, conditions[field.label]);
       } else {
         text = field.staticText || field.label || "";
       }
@@ -77,7 +99,7 @@ html, body { margin: 0; padding: 0; width: ${W}mm; background: white; }
 <body>${pages}</body></html>`;
 }
 
-export async function generatePdfPuppeteer(recipients, template, mapping, onProgress) {
+export async function generatePdfPuppeteer(recipients, template, mapping, conditions, onProgress) {
   const { format = "DIN_LANG", fields = [] } = template;
   const { width: W, height: H } = SIZES[format] || SIZES.DIN_LANG;
 
@@ -100,7 +122,7 @@ export async function generatePdfPuppeteer(recipients, template, mapping, onProg
 
     for (let start = 0; start < recipients.length; start += BATCH_SIZE) {
       const batch = recipients.slice(start, start + BATCH_SIZE);
-      const html  = buildBatchHtml(batch, fields, mapping, W, H);
+      const html  = buildBatchHtml(batch, fields, mapping, conditions, W, H);
 
       await chromePage.setContent(html, { waitUntil: "load", timeout: 120000 });
       // Give color font (LiebeHeide COLR) time to render

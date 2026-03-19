@@ -7,12 +7,12 @@
 import { generatePdfDirect }     from "./pdfGeneratorDirect.js";
 import { generatePdfPuppeteer }  from "./pdfGeneratorPuppeteer.js";
 
-export async function generateEnvelopePDF(recipients, template, mapping, onProgress) {
+export async function generateEnvelopePDF(recipients, template, mapping, conditions, onProgress) {
   const needsPuppeteer = (template.fields || []).some(f => f.font === "LiebeHeide");
 
   if (needsPuppeteer) {
-    return generatePdfPuppeteer(recipients, template, mapping, onProgress);
+    return generatePdfPuppeteer(recipients, template, mapping, conditions, onProgress);
   } else {
-    return generatePdfDirect(recipients, template, mapping, onProgress);
+    return generatePdfDirect(recipients, template, mapping, conditions, onProgress);
   }
 }

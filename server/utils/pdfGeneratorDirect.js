@@ -38,11 +38,32 @@ function getFontBytes(filename) {
   return fontBytesCache.get(filename);
 }
 
-function resolveContent(content, recipient, mapping) {
+function applyConditions(value, rule) {
+  if (!rule || !rule.rules || rule.rules.length === 0) return value;
+  const lv = value.toLowerCase();
+  for (const r of rule.rules) {
+    if (!r.when) continue;
+    const lw = r.when.toLowerCase();
+    let match = false;
+    switch (r.operator) {
+      case "equals":     match = lv === lw; break;
+      case "contains":   match = lv.includes(lw); break;
+      case "startsWith": match = lv.startsWith(lw); break;
+      case "endsWith":   match = lv.endsWith(lw); break;
+      default:           match = lv === lw;
+    }
+    if (match) return r.then ?? "";
+  }
+  return rule.useDefault ? (rule.default || "") : value;
+}
+
+function resolveContent(content, recipient, mapping, conditions = {}) {
   if (!content) return "";
   return content.replace(/\{\{([^}]+)\}\}/g, (_, key) => {
-    const col = mapping[key.trim()];
-    return col ? String(recipient[col] ?? "") : "";
+    const k   = key.trim();
+    const col = mapping[k];
+    const raw = col ? String(recipient[col] ?? "") : "";
+    return applyConditions(raw, conditions[k]);
   });
 }
 
@@ -76,7 +97,7 @@ function wrapText(font, text, fontSizePt, maxWidthPt) {
   return lines;
 }
 
-export async function generatePdfDirect(recipients, template, mapping, onProgress) {
+export async function generatePdfDirect(recipients, template, mapping, conditions, onProgress) {
   const { format = "DIN_LANG", fields = [] } = template;
   const { width: W, height: H } = SIZES[format] || SIZES.DIN_LANG;
   const W_pt = W * PT_PER_MM;
@@ -109,10 +130,11 @@ export async function generatePdfDirect(recipients, template, mapping, onProgres
     for (const field of fields) {
       let text = "";
       if (field.content !== undefined) {
-        text = resolveContent(field.content, recipient, mapping);
+        text = resolveContent(field.content, recipient, mapping, conditions);
       } else if (field.isPlaceholder) {
         const col = mapping[field.label];
-        text = col ? String(recipient[col] ?? "") : "";
+        const raw = col ? String(recipient[col] ?? "") : "";
+        text = applyConditions(raw, conditions[field.label]);
       } else {
         text = field.staticText || field.label || "";
       }

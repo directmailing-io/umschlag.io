@@ -23,6 +23,9 @@ export default function GenerateModal({ templates, onClose }) {
   const [columns, setColumns]               = useState([]);
   const [previewRows, setPreviewRows]       = useState([]);
   const [mapping, setMapping]               = useState({});
+  // conditions: { [placeholderKey]: { rules: [{operator,when,then}], useDefault, default } }
+  const [conditions, setConditions]         = useState({});
+  const [expandedCondition, setExpandedCondition] = useState(null); // key of open accordion
   const [filename, setFilename]             = useState("umschlaege");
   const [jobs, setJobs]                     = useState([]);
   const [generating, setGenerating]         = useState(false);
@@ -43,7 +46,46 @@ export default function GenerateModal({ templates, onClose }) {
     const m = {};
     extractPlaceholders(t).forEach(p => { m[p] = ""; });
     setMapping(m);
+    setConditions({});
+    setExpandedCondition(null);
     setStep(2);
+  }
+
+  // ── Condition helpers ──────────────────────────────────────────────
+  function getCondition(key) {
+    return conditions[key] || { rules: [{ operator: "equals", when: "", then: "" }], useDefault: false, default: "" };
+  }
+
+  function setCondition(key, updates) {
+    setConditions(prev => ({ ...prev, [key]: { ...getCondition(key), ...updates } }));
+  }
+
+  function addRule(key) {
+    const c = getCondition(key);
+    setCondition(key, { rules: [...c.rules, { operator: "equals", when: "", then: "" }] });
+  }
+
+  function removeRule(key, idx) {
+    const c = getCondition(key);
+    setCondition(key, { rules: c.rules.filter((_, i) => i !== idx) });
+  }
+
+  function updateRule(key, idx, patch) {
+    const c = getCondition(key);
+    setCondition(key, { rules: c.rules.map((r, i) => i === idx ? { ...r, ...patch } : r) });
+  }
+
+  function hasActiveConditions(key) {
+    return (conditions[key]?.rules || []).some(r => r.when.trim());
+  }
+
+  // Build conditions object to send — only keys with at least one filled rule
+  function buildConditionsPayload() {
+    const out = {};
+    for (const [k, v] of Object.entries(conditions)) {
+      if ((v.rules || []).some(r => r.when.trim())) out[k] = v;
+    }
+    return Object.keys(out).length > 0 ? out : undefined;
   }
 
   function processFile(file) {
@@ -119,6 +161,7 @@ export default function GenerateModal({ templates, onClose }) {
       const sheetRows = XLSX.utils.sheet_to_json(workbook.Sheets[job.sheetName], { defval: "" });
       let jobId;
       try {
+        const conditionsPayload = buildConditionsPayload();
         const res = await fetch(`${API}/pdf/start`, {
           method:  "POST",
           headers: { "Content-Type": "application/json" },
@@ -126,6 +169,7 @@ export default function GenerateModal({ templates, onClose }) {
             recipients: sheetRows,
             template:   selectedTemplate,
             mapping,
+            ...(conditionsPayload && { conditions: conditionsPayload }),
             filename:   job.filename,
           }),
         });
@@ -353,18 +397,109 @@ export default function GenerateModal({ templates, onClose }) {
               </div>
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                {placeholders.map(p => (
-                  <div key={p}>
-                    <label style={labelStyle}>
-                      <code style={{ background: "#eff6ff", color: "#2563eb", padding: "2px 6px", borderRadius: 4, fontSize: 11 }}>{`{{${p}}}`}</code>
-                      <span style={{ color: "#16a34a", marginLeft: 6, fontSize: 10 }}>→ Excel-Spalte</span>
-                    </label>
-                    <select value={mapping[p] || ""} onChange={e => setMapping(m => ({ ...m, [p]: e.target.value }))} style={inputStyle}>
-                      <option value="">(nicht zuordnen)</option>
-                      {columns.map(c => <option key={c} value={c}>{c}</option>)}
-                    </select>
-                  </div>
-                ))}
+                {placeholders.map(p => {
+                  const cond     = getCondition(p);
+                  const isOpen   = expandedCondition === p;
+                  const hasRules = hasActiveConditions(p);
+                  return (
+                    <div key={p} style={{ border: "1.5px solid #e5e7eb", borderRadius: 10, overflow: "hidden" }}>
+                      {/* Mapping row */}
+                      <div style={{ padding: "10px 12px", background: "#f9fafb" }}>
+                        <label style={labelStyle}>
+                          <code style={{ background: "#eff6ff", color: "#2563eb", padding: "2px 6px", borderRadius: 4, fontSize: 11 }}>{`{{${p}}}`}</code>
+                          <span style={{ color: "#16a34a", marginLeft: 6, fontSize: 10 }}>→ Excel-Spalte</span>
+                        </label>
+                        <select value={mapping[p] || ""} onChange={e => setMapping(m => ({ ...m, [p]: e.target.value }))} style={{ ...inputStyle, background: "#fff" }}>
+                          <option value="">(nicht zuordnen)</option>
+                          {columns.map(c => <option key={c} value={c}>{c}</option>)}
+                        </select>
+                      </div>
+
+                      {/* Wenn-Dann toggle */}
+                      <button
+                        onClick={() => setExpandedCondition(isOpen ? null : p)}
+                        style={{
+                          width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between",
+                          padding: "7px 12px", background: isOpen ? "#eff6ff" : "#fff",
+                          border: "none", borderTop: "1px solid #e5e7eb", cursor: "pointer",
+                          fontSize: 12, fontWeight: 600, color: hasRules ? "#2563eb" : "#6b7280",
+                          transition: "background .15s",
+                        }}
+                      >
+                        <span>⚙ Wenn–Dann Bedingungen{hasRules ? ` (${cond.rules.filter(r => r.when.trim()).length} aktiv)` : ""}</span>
+                        <span style={{ fontSize: 10, transform: isOpen ? "rotate(180deg)" : "none", transition: "transform .15s" }}>▼</span>
+                      </button>
+
+                      {/* Conditions panel */}
+                      {isOpen && (
+                        <div style={{ padding: "12px", background: "#f8fafc", borderTop: "1px solid #e5e7eb" }}>
+                          <p style={{ margin: "0 0 10px", fontSize: 12, color: "#6b7280" }}>
+                            Wenn der Zellwert eine Bedingung erfüllt, wird er durch den angegebenen Wert ersetzt.
+                            Vergleiche ignorieren Groß-/Kleinschreibung.
+                          </p>
+
+                          {cond.rules.map((rule, ri) => (
+                            <div key={ri} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 7, flexWrap: "wrap" }}>
+                              <span style={{ fontSize: 12, color: "#6b7280", whiteSpace: "nowrap" }}>Wenn</span>
+                              <input
+                                value={rule.when}
+                                onChange={e => updateRule(p, ri, { when: e.target.value })}
+                                placeholder="Wert…"
+                                style={{ ...condInput, flex: 1, minWidth: 80 }}
+                              />
+                              <select
+                                value={rule.operator}
+                                onChange={e => updateRule(p, ri, { operator: e.target.value })}
+                                style={condSelect}
+                              >
+                                <option value="equals">ist gleich</option>
+                                <option value="contains">enthält</option>
+                                <option value="startsWith">beginnt mit</option>
+                                <option value="endsWith">endet mit</option>
+                              </select>
+                              <span style={{ fontSize: 12, color: "#6b7280" }}>→</span>
+                              <input
+                                value={rule.then}
+                                onChange={e => updateRule(p, ri, { then: e.target.value })}
+                                placeholder="Ausgabe…"
+                                style={{ ...condInput, flex: 1, minWidth: 80 }}
+                              />
+                              {cond.rules.length > 1 && (
+                                <button onClick={() => removeRule(p, ri)} style={condRemoveBtn} title="Entfernen">✕</button>
+                              )}
+                            </div>
+                          ))}
+
+                          <button onClick={() => addRule(p)} style={{ fontSize: 12, color: "#2563eb", background: "none", border: "1px dashed #93c5fd", borderRadius: 6, padding: "5px 10px", cursor: "pointer", marginBottom: 10 }}>
+                            + Weitere Bedingung
+                          </button>
+
+                          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                            <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12, color: "#6b7280", cursor: "pointer" }}>
+                              <input
+                                type="checkbox"
+                                checked={cond.useDefault}
+                                onChange={e => setCondition(p, { useDefault: e.target.checked })}
+                                style={{ accentColor: "#2563eb" }}
+                              />
+                              Sonst:
+                            </label>
+                            {cond.useDefault ? (
+                              <input
+                                value={cond.default}
+                                onChange={e => setCondition(p, { default: e.target.value })}
+                                placeholder="Standardwert (leer = Feld ausblenden)"
+                                style={{ ...condInput, flex: 1, minWidth: 150 }}
+                              />
+                            ) : (
+                              <span style={{ fontSize: 11, color: "#9ca3af", fontStyle: "italic" }}>Originalwert behalten</span>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
                 <div style={{ fontSize: 12, color: "#6b7280" }}>
                   {mappedCount}/{placeholders.length} Platzhalter zugeordnet
                 </div>
@@ -526,6 +661,10 @@ function DataPreview({ rows, columns }) {
     </div>
   );
 }
+
+const condInput     = { padding: "6px 9px", border: "1.5px solid #e2e8f0", borderRadius: 7, fontSize: 12, outline: "none", background: "#fff", color: "#1e293b" };
+const condSelect    = { padding: "6px 8px", border: "1.5px solid #e2e8f0", borderRadius: 7, fontSize: 12, background: "#fff", color: "#1e293b", cursor: "pointer" };
+const condRemoveBtn = { padding: "4px 8px", border: "1.5px solid #fca5a5", borderRadius: 6, background: "#fff", color: "#dc2626", cursor: "pointer", fontSize: 12, flexShrink: 0 };
 
 const h3 = { margin: "0 0 6px", fontSize: 18, fontWeight: 700, color: "#111" };
 const sub = { margin: "0 0 20px", fontSize: 13, color: "#6b7280" };

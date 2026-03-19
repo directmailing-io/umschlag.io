@@ -30,7 +30,7 @@ function runNextPuppeteerJob() {
 
 // POST /api/pdf/start — kick off a job
 router.post("/start", (req, res) => {
-  const { recipients, template, mapping, filename } = req.body;
+  const { recipients, template, mapping, conditions, filename } = req.body;
 
   if (!Array.isArray(recipients) || recipients.length === 0)
     return res.status(400).json({ error: "Keine Empfänger" });
@@ -52,7 +52,7 @@ router.post("/start", (req, res) => {
   const run = async () => {
     try {
       const pdf = await generateEnvelopePDF(
-        recipients, template, mapping || {},
+        recipients, template, mapping || {}, conditions || {},
         (current, total) => {
           const j = jobs.get(jobId);
           if (j) { j.progress = current; j.total = total; }
