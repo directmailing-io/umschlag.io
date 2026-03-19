@@ -7,6 +7,7 @@ import { fileURLToPath } from "url";
 import templateRoutes from "./routes/templateRoutes.js";
 import pdfRoutes from "./routes/pdfRoutes.js";
 import sheetsRoutes from "./routes/sheetsRoutes.js";
+import shareRoutes from "./routes/shareRoutes.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -38,6 +39,7 @@ app.get("/api/health", (req, res) => {
 });
 
 app.use("/api/templates", templateRoutes);
+app.use("/api/shares", shareRoutes);
 
 async function start() {
   await connectDB();
