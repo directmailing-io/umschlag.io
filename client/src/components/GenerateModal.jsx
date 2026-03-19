@@ -624,7 +624,7 @@ export default function GenerateModal({ templates, onClose }) {
             <h3 style={h3}>Spalten zuordnen</h3>
             <p style={sub}>
               {dataSource === "sheets"
-                ? `Google Sheets · ${sheetsRows?.length || 0} Zeilen`
+                ? `Google Sheets · ${totalRows} Zeilen`
                 : selectedSheets.length > 1
                   ? `Gilt für alle ${selectedSheets.length} Tabellenblätter`
                   : `Blatt: ${selectedSheets[0]}`
