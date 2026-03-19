@@ -15,7 +15,7 @@ function getStripe() {
 // POST /api/shares — create a share link (free or paid)
 router.post("/", async (req, res) => {
   try {
-    const { templateId, type, priceGross, vatRate, label } = req.body;
+    const { templateId, type, priceGross, vatRate, label, frontendBase } = req.body;
 
     const template = await EnvelopeTemplate.findById(templateId);
     if (!template) return res.status(404).json({ error: "Vorlage nicht gefunden" });
@@ -28,10 +28,10 @@ router.post("/", async (req, res) => {
       priceGross: type === "paid" ? Math.round(Number(priceGross)) : undefined,
       vatRate: type === "paid" ? Number(vatRate || 0) : 0,
       label: label || template.name,
+      frontendBase: frontendBase || process.env.APP_URL || "http://localhost:3000",
     });
 
-    const appUrl = process.env.APP_URL || "http://localhost:3000";
-    res.json({ shareId, url: `${appUrl}/?share=${shareId}` });
+    res.json({ shareId });
   } catch (err) {
     console.error("Share create error:", err);
     res.status(500).json({ error: "Fehler beim Erstellen des Links" });
@@ -77,7 +77,7 @@ router.post("/:shareId/checkout", async (req, res) => {
     if (!link) return res.status(404).json({ error: "Link nicht gefunden" });
     if (link.type !== "paid") return res.status(400).json({ error: "Dieser Link ist kostenlos" });
 
-    const appUrl = process.env.APP_URL || "http://localhost:3000";
+    const frontendBase = req.body.frontendBase || link.frontendBase || process.env.APP_URL || "http://localhost:3000";
     const templateName = link.templateId?.name || link.label || "Vorlage";
 
     // Calculate net amount from gross
@@ -109,8 +109,8 @@ router.post("/:shareId/checkout", async (req, res) => {
         automatic_tax: { enabled: false },
       } : {}),
       payment_method_types: ["card", "sepa_debit", "paypal", "klarna", "giropay", "bancontact", "ideal"],
-      success_url: `${appUrl}/?share=${link.shareId}&session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url:  `${appUrl}/?share=${link.shareId}&cancelled=1`,
+      success_url: `${frontendBase}?share=${link.shareId}&session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url:  `${frontendBase}?share=${link.shareId}&cancelled=1`,
       metadata: { shareId: link.shareId },
     });
 

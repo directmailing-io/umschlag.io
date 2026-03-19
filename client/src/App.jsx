@@ -63,7 +63,12 @@ function SharedView({ shareId, sessionId, cancelled }) {
     setPayState("checking-out");
     setPayError("");
     try {
-      const res  = await fetch(`${API}/shares/${shareId}/checkout`, { method: "POST" });
+      const frontendBase = `${window.location.origin}${window.location.pathname}`.replace(/\/$/, "");
+      const res  = await fetch(`${API}/shares/${shareId}/checkout`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ frontendBase }),
+      });
       const text = await res.text();
       let data;
       try { data = JSON.parse(text); } catch {

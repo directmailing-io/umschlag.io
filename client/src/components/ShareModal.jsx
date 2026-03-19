@@ -32,6 +32,7 @@ export default function ShareModal({ template, onClose }) {
     setLoading(true);
     setError("");
     try {
+      const frontendBase = `${window.location.origin}${window.location.pathname}`.replace(/\/$/, "");
       const res = await fetch(`${API}/shares`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -41,6 +42,7 @@ export default function ShareModal({ template, onClose }) {
           priceGross: type === "paid" ? grossCents : undefined,
           vatRate: type === "paid" ? vatRate : 0,
           label: label.trim() || template.name,
+          frontendBase, // tells backend where to redirect after Stripe payment
         }),
       });
       const text = await res.text();
@@ -49,7 +51,8 @@ export default function ShareModal({ template, onClose }) {
         throw new Error(`Server nicht erreichbar (${res.status}). Bitte Seite neu laden.`);
       }
       if (!res.ok) throw new Error(data.error || "Fehler");
-      setResult(data);
+      // Build share URL on the client side — always correct regardless of APP_URL
+      setResult({ ...data, url: `${frontendBase}?share=${data.shareId}` });
     } catch (e) {
       setError(e.message);
     } finally {
