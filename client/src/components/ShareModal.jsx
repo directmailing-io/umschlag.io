@@ -43,7 +43,11 @@ export default function ShareModal({ template, onClose }) {
           label: label.trim() || template.name,
         }),
       });
-      const data = await res.json();
+      const text = await res.text();
+      let data;
+      try { data = JSON.parse(text); } catch {
+        throw new Error(`Server nicht erreichbar (${res.status}). Bitte Seite neu laden.`);
+      }
       if (!res.ok) throw new Error(data.error || "Fehler");
       setResult(data);
     } catch (e) {

@@ -64,7 +64,11 @@ function SharedView({ shareId, sessionId, cancelled }) {
     setPayError("");
     try {
       const res  = await fetch(`${API}/shares/${shareId}/checkout`, { method: "POST" });
-      const data = await res.json();
+      const text = await res.text();
+      let data;
+      try { data = JSON.parse(text); } catch {
+        throw new Error(`Server nicht erreichbar (${res.status}). Bitte Seite neu laden.`);
+      }
       if (!res.ok) throw new Error(data.error || "Fehler");
       window.location.href = data.checkoutUrl;
     } catch (e) {

@@ -5,7 +5,12 @@ import SharedLink from "../models/SharedLink.js";
 import EnvelopeTemplate from "../models/EnvelopeTemplate.js";
 
 const router = express.Router();
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+
+// Lazy Stripe initialization — avoids crash when STRIPE_SECRET_KEY is not set at startup
+function getStripe() {
+  if (!process.env.STRIPE_SECRET_KEY) throw new Error("STRIPE_SECRET_KEY ist nicht konfiguriert");
+  return new Stripe(process.env.STRIPE_SECRET_KEY);
+}
 
 // POST /api/shares — create a share link (free or paid)
 router.post("/", async (req, res) => {
@@ -83,7 +88,7 @@ router.post("/:shareId/checkout", async (req, res) => {
       : grossCents;
     const taxCents   = grossCents - netCents;
 
-    const session = await stripe.checkout.sessions.create({
+    const session = await getStripe().checkout.sessions.create({
       mode: "payment",
       currency: link.currency || "eur",
       line_items: [{
@@ -126,7 +131,7 @@ router.get("/:shareId/verify/:sessionId", async (req, res) => {
       return res.status(404).json({ error: "Link nicht gefunden" });
     }
 
-    const session = await stripe.checkout.sessions.retrieve(req.params.sessionId);
+    const session = await getStripe().checkout.sessions.retrieve(req.params.sessionId);
 
     if (session.payment_status !== "paid") {
       return res.status(402).json({ error: "Zahlung noch nicht abgeschlossen", status: session.payment_status });
