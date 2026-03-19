@@ -16,9 +16,17 @@ function extractPlaceholders(template) {
 export default function GenerateModal({ templates, onClose }) {
   const [step, setStep]                     = useState(1);
   const [selectedTemplate, setTemplate]     = useState(null);
+  // Data source: "excel" | "sheets"
+  const [dataSource, setDataSource]         = useState("excel");
+  // Excel
   const [workbook, setWorkbook]             = useState(null);
   const [selectedSheets, setSelectedSheets] = useState([]);
   const [sheetRowCounts, setSheetRowCounts] = useState({});
+  // Google Sheets
+  const [sheetsUrl, setSheetsUrl]           = useState("");
+  const [sheetsRows, setSheetsRows]         = useState(null);   // null = not loaded yet
+  const [sheetsLoading, setSheetsLoading]   = useState(false);
+  const [sheetsError, setSheetsError]       = useState("");
   // columns/rows come from first selected sheet — used for mapping + preview
   const [columns, setColumns]               = useState([]);
   const [previewRows, setPreviewRows]       = useState([]);
@@ -39,7 +47,12 @@ export default function GenerateModal({ templates, onClose }) {
 
   const placeholders = selectedTemplate ? extractPlaceholders(selectedTemplate) : [];
   const mappedCount  = Object.values(mapping).filter(Boolean).length;
-  const totalRows    = selectedSheets.reduce((s, n) => s + (sheetRowCounts[n] || 0), 0);
+  const totalRows    = dataSource === "sheets"
+    ? (sheetsRows?.length || 0)
+    : selectedSheets.reduce((s, n) => s + (sheetRowCounts[n] || 0), 0);
+  const dataReady    = dataSource === "sheets"
+    ? sheetsRows !== null && sheetsRows.length > 0
+    : workbook !== null && selectedSheets.length > 0;
 
   function selectTemplate(t) {
     setTemplate(t);
@@ -125,6 +138,37 @@ export default function GenerateModal({ templates, onClose }) {
     });
   }
 
+  async function loadGoogleSheets() {
+    const url = sheetsUrl.trim();
+    if (!url) return;
+    setSheetsLoading(true);
+    setSheetsError("");
+    setSheetsRows(null);
+    try {
+      const res = await fetch(`${API}/sheets/load?url=${encodeURIComponent(url)}`);
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+      if (!Array.isArray(body) || body.length === 0) throw new Error("Keine Daten gefunden. Ist die Tabelle öffentlich und nicht leer?");
+      setSheetsRows(body);
+      const cols = Object.keys(body[0]);
+      setColumns(cols);
+      setPreviewRows(body.slice(0, 4));
+      setMapping(prev => {
+        const next = { ...prev };
+        Object.keys(next).forEach(key => {
+          if (next[key]) return;
+          const match = cols.find(c => c.toLowerCase() === key.toLowerCase());
+          if (match) next[key] = match;
+        });
+        return next;
+      });
+    } catch (err) {
+      setSheetsError(err.message);
+    } finally {
+      setSheetsLoading(false);
+    }
+  }
+
   function toggleSheet(name) {
     setSelectedSheets(prev =>
       prev.includes(name) ? prev.filter(s => s !== name) : [...prev, name]
@@ -139,26 +183,30 @@ export default function GenerateModal({ templates, onClose }) {
   }
 
   async function handleGenerate() {
-    if (!selectedTemplate || selectedSheets.length === 0) return;
+    if (!selectedTemplate || !dataReady) return;
     setGenerating(true);
     setError("");
 
-    // Init job list
-    const initialJobs = selectedSheets.map(sn => ({
-      sheetName: sn,
-      jobId:     null,
-      progress:  0,
-      total:     sheetRowCounts[sn] || 0,
-      status:    "pending",
-      filename:  selectedSheets.length === 1
-        ? (filename || "umschlaege")
-        : `${filename || "umschlaege"}_${sn}`,
-    }));
+    // Build unified job list
+    const initialJobs = dataSource === "sheets"
+      ? [{ sheetName: "Google Sheets", jobId: null, progress: 0, total: sheetsRows.length, status: "pending", filename: filename || "umschlaege" }]
+      : selectedSheets.map(sn => ({
+          sheetName: sn,
+          jobId:     null,
+          progress:  0,
+          total:     sheetRowCounts[sn] || 0,
+          status:    "pending",
+          filename:  selectedSheets.length === 1
+            ? (filename || "umschlaege")
+            : `${filename || "umschlaege"}_${sn}`,
+        }));
     setJobs(initialJobs);
 
     // Start all jobs and subscribe to SSE
     for (const job of initialJobs) {
-      const sheetRows = XLSX.utils.sheet_to_json(workbook.Sheets[job.sheetName], { defval: "" });
+      const sheetRows = dataSource === "sheets"
+        ? sheetsRows
+        : XLSX.utils.sheet_to_json(workbook.Sheets[job.sheetName], { defval: "" });
       let jobId;
       try {
         const conditionsPayload = buildConditionsPayload();
@@ -231,6 +279,7 @@ export default function GenerateModal({ templates, onClose }) {
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)",
       display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }}>
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
       <div style={{ background: "#fff", borderRadius: 16, width: 620, maxHeight: "90vh",
         overflow: "auto", padding: "32px 36px", position: "relative",
         boxShadow: "0 24px 64px rgba(0,0,0,0.22)" }}>
@@ -271,110 +320,226 @@ export default function GenerateModal({ templates, onClose }) {
           </div>
         )}
 
-        {/* ── STEP 2: Excel ─────────────────────────────────── */}
+        {/* ── STEP 2: Datenquelle ────────────────────────────── */}
         {step === 2 && (
           <div>
-            <h3 style={h3}>Excel-Datei laden</h3>
+            <h3 style={h3}>Daten laden</h3>
             <p style={sub}>Vorlage: <strong>{selectedTemplate.name}</strong></p>
 
-            <div
-              onClick={() => fileRef.current.click()}
-              onDrop={handleDrop}
-              onDragOver={e => { e.preventDefault(); setDraggingFile(true); }}
-              onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget)) setDraggingFile(false); }}
-              style={{
-                border: `2px dashed ${draggingFile ? "#2563eb" : workbook ? "#86efac" : "#d1d5db"}`,
-                borderRadius: 12, padding: workbook ? "14px 18px" : "48px 24px",
-                textAlign: "center", cursor: "pointer",
-                background: draggingFile ? "#eff6ff" : workbook ? "#f0fdf4" : "#f9fafb",
-                transition: "all .15s",
-              }}
-            >
-              {!workbook ? (
-                <>
-                  <div style={{ fontSize: 40, marginBottom: 10, pointerEvents: "none" }}>
-                    {draggingFile ? "📥" : "📂"}
-                  </div>
-                  <div style={{ fontWeight: 600, fontSize: 14, color: draggingFile ? "#2563eb" : "#374151", pointerEvents: "none" }}>
-                    {draggingFile ? "Datei hier ablegen" : "Excel-Datei auswählen oder hier ablegen"}
-                  </div>
-                  <div style={{ fontSize: 12, color: "#9ca3af", marginTop: 4, pointerEvents: "none" }}>.xlsx · .xls</div>
-                </>
-              ) : (
-                <div style={{ display: "flex", alignItems: "center", gap: 10, pointerEvents: "none" }}>
-                  <span style={{ fontSize: 22 }}>✅</span>
-                  <span style={{ fontSize: 13, fontWeight: 600, color: "#16a34a" }}>
-                    {workbook.SheetNames.length} Blatt/Blätter · {columns.length} Spalten
-                  </span>
-                  <span style={{ fontSize: 11, color: "#9ca3af", marginLeft: "auto" }}>Klicken zum Ändern</span>
-                </div>
-              )}
+            {/* Source tabs */}
+            <div style={{
+              display: "flex", background: "#f1f5f9", borderRadius: 10,
+              padding: 4, marginBottom: 16, gap: 4,
+            }}>
+              {[
+                { id: "excel", label: "Excel-Datei" },
+                { id: "sheets", label: "Google Sheets" },
+              ].map(tab => (
+                <button
+                  key={tab.id}
+                  onClick={() => setDataSource(tab.id)}
+                  style={{
+                    flex: 1, padding: "8px 12px", borderRadius: 7,
+                    border: "none", cursor: "pointer", fontSize: 13, fontWeight: 600,
+                    background: dataSource === tab.id ? "#fff" : "transparent",
+                    color: dataSource === tab.id ? "#2563eb" : "#6b7280",
+                    boxShadow: dataSource === tab.id ? "0 1px 4px rgba(0,0,0,.08)" : "none",
+                    transition: "all .15s",
+                  }}
+                >
+                  {tab.label}
+                </button>
+              ))}
             </div>
-            <input ref={fileRef} type="file" accept=".xlsx,.xls"
-              onChange={e => processFile(e.target.files[0])} style={{ display: "none" }} />
 
-            {workbook && (
-              <div style={{ display: "flex", flexDirection: "column", gap: 16, marginTop: 16 }}>
+            {/* ── Excel panel ── */}
+            {dataSource === "excel" && (
+              <div>
+                <div
+                  onClick={() => fileRef.current.click()}
+                  onDrop={handleDrop}
+                  onDragOver={e => { e.preventDefault(); setDraggingFile(true); }}
+                  onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget)) setDraggingFile(false); }}
+                  style={{
+                    border: `2px dashed ${draggingFile ? "#2563eb" : workbook ? "#86efac" : "#d1d5db"}`,
+                    borderRadius: 12, padding: workbook ? "14px 18px" : "48px 24px",
+                    textAlign: "center", cursor: "pointer",
+                    background: draggingFile ? "#eff6ff" : workbook ? "#f0fdf4" : "#f9fafb",
+                    transition: "all .15s",
+                  }}
+                >
+                  {!workbook ? (
+                    <>
+                      <div style={{ marginBottom: 10, pointerEvents: "none" }}>
+                        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke={draggingFile ? "#2563eb" : "#9ca3af"} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 12 15 15"/>
+                        </svg>
+                      </div>
+                      <div style={{ fontWeight: 600, fontSize: 14, color: draggingFile ? "#2563eb" : "#374151", pointerEvents: "none" }}>
+                        {draggingFile ? "Datei hier ablegen" : "Excel-Datei auswählen oder hier ablegen"}
+                      </div>
+                      <div style={{ fontSize: 12, color: "#9ca3af", marginTop: 4, pointerEvents: "none" }}>.xlsx · .xls</div>
+                    </>
+                  ) : (
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, pointerEvents: "none" }}>
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#16a34a" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <polyline points="20 6 9 17 4 12"/>
+                      </svg>
+                      <span style={{ fontSize: 13, fontWeight: 600, color: "#16a34a" }}>
+                        {workbook.SheetNames.length} Blatt/Blätter · {columns.length} Spalten
+                      </span>
+                      <span style={{ fontSize: 11, color: "#9ca3af", marginLeft: "auto" }}>Klicken zum Ändern</span>
+                    </div>
+                  )}
+                </div>
+                <input ref={fileRef} type="file" accept=".xlsx,.xls"
+                  onChange={e => processFile(e.target.files[0])} style={{ display: "none" }} />
 
-                {/* Sheet checkboxes */}
+                {workbook && (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 16, marginTop: 16 }}>
+                    {/* Sheet checkboxes */}
+                    <div>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                        <label style={labelStyle}>Tabellenblätter</label>
+                        <button
+                          onClick={() => {
+                            if (selectedSheets.length === workbook.SheetNames.length) {
+                              setSelectedSheets([]);
+                            } else {
+                              setSelectedSheets(workbook.SheetNames);
+                            }
+                          }}
+                          style={{ fontSize: 11, color: "#2563eb", background: "none", border: "none", cursor: "pointer", fontWeight: 600 }}
+                        >
+                          {selectedSheets.length === workbook.SheetNames.length ? "Alle abwählen" : "Alle auswählen"}
+                        </button>
+                      </div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                        {workbook.SheetNames.map(name => {
+                          const checked = selectedSheets.includes(name);
+                          const count   = sheetRowCounts[name] || 0;
+                          return (
+                            <label key={name} style={{
+                              display: "flex", alignItems: "center", gap: 10, padding: "9px 12px",
+                              borderRadius: 8, border: `1.5px solid ${checked ? "#2563eb" : "#e5e7eb"}`,
+                              background: checked ? "#eff6ff" : "#f9fafb", cursor: "pointer",
+                            }}>
+                              <input type="checkbox" checked={checked}
+                                onChange={() => toggleSheet(name)}
+                                style={{ width: 15, height: 15, accentColor: "#2563eb" }} />
+                              <span style={{ fontWeight: 600, fontSize: 13, flex: 1 }}>{name}</span>
+                              <span style={{ fontSize: 12, color: "#6b7280" }}>{count} Zeilen</span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                      {selectedSheets.length === 0 && (
+                        <div style={{ fontSize: 12, color: "#dc2626", marginTop: 6 }}>Mindestens ein Blatt auswählen</div>
+                      )}
+                    </div>
+
+                    {selectedSheets.length > 0 && (
+                      <DataPreview rows={previewRows} columns={columns} />
+                    )}
+
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <button onClick={() => fileRef.current.click()} style={ghostBtn}>Andere Datei</button>
+                      <button
+                        onClick={() => {
+                          if (selectedSheets.length > 0) loadColumnsFrom(workbook, selectedSheets[0]);
+                          setStep(3);
+                        }}
+                        disabled={selectedSheets.length === 0}
+                        style={{ ...primaryBtn, flex: 1, background: selectedSheets.length === 0 ? "#9ca3af" : "#2563eb" }}
+                      >
+                        Weiter zum Mapping →
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ── Google Sheets panel ── */}
+            {dataSource === "sheets" && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
                 <div>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                    <label style={labelStyle}>Tabellenblätter</label>
-                    <button
-                      onClick={() => {
-                        if (selectedSheets.length === workbook.SheetNames.length) {
-                          setSelectedSheets([]);
-                        } else {
-                          setSelectedSheets(workbook.SheetNames);
-                        }
+                  <label style={labelStyle}>Google Sheets URL</label>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <input
+                      type="url"
+                      value={sheetsUrl}
+                      onChange={e => { setSheetsUrl(e.target.value); setSheetsError(""); setSheetsRows(null); }}
+                      onKeyDown={e => e.key === "Enter" && loadGoogleSheets()}
+                      placeholder="https://docs.google.com/spreadsheets/d/…"
+                      style={{
+                        ...inputStyle, flex: 1,
+                        borderColor: sheetsError ? "#ef4444" : sheetsRows ? "#86efac" : "#e5e7eb",
+                        background: sheetsRows ? "#f0fdf4" : "#fff",
                       }}
-                      style={{ fontSize: 11, color: "#2563eb", background: "none", border: "none", cursor: "pointer", fontWeight: 600 }}
+                    />
+                    <button
+                      onClick={loadGoogleSheets}
+                      disabled={!sheetsUrl.trim() || sheetsLoading}
+                      style={{
+                        ...primaryBtn,
+                        padding: "0 16px", minWidth: 80, flexShrink: 0,
+                        background: !sheetsUrl.trim() || sheetsLoading ? "#9ca3af" : "#2563eb",
+                        display: "flex", alignItems: "center", gap: 6,
+                      }}
                     >
-                      {selectedSheets.length === workbook.SheetNames.length ? "Alle abwählen" : "Alle auswählen"}
+                      {sheetsLoading ? (
+                        <>
+                          <span style={{
+                            width: 14, height: 14, border: "2px solid rgba(255,255,255,.4)",
+                            borderTopColor: "#fff", borderRadius: "50%",
+                            animation: "spin .7s linear infinite", display: "inline-block",
+                          }} />
+                          Laden…
+                        </>
+                      ) : "Laden"}
                     </button>
                   </div>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                    {workbook.SheetNames.map(name => {
-                      const checked = selectedSheets.includes(name);
-                      const count   = sheetRowCounts[name] || 0;
-                      return (
-                        <label key={name} style={{
-                          display: "flex", alignItems: "center", gap: 10, padding: "9px 12px",
-                          borderRadius: 8, border: `1.5px solid ${checked ? "#2563eb" : "#e5e7eb"}`,
-                          background: checked ? "#eff6ff" : "#f9fafb", cursor: "pointer",
-                        }}>
-                          <input type="checkbox" checked={checked}
-                            onChange={() => toggleSheet(name)}
-                            style={{ width: 15, height: 15, accentColor: "#2563eb" }} />
-                          <span style={{ fontWeight: 600, fontSize: 13, flex: 1 }}>{name}</span>
-                          <span style={{ fontSize: 12, color: "#6b7280" }}>{count} Zeilen</span>
-                        </label>
-                      );
-                    })}
+                  <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 5 }}>
+                    Die Tabelle muss öffentlich zugänglich sein (Ansicht für alle mit Link).
                   </div>
-                  {selectedSheets.length === 0 && (
-                    <div style={{ fontSize: 12, color: "#dc2626", marginTop: 6 }}>Mindestens ein Blatt auswählen</div>
+                  {sheetsError && (
+                    <div style={{
+                      display: "flex", alignItems: "flex-start", gap: 7, marginTop: 8,
+                      background: "#fef2f2", border: "1.5px solid #fecaca",
+                      borderRadius: 8, padding: "10px 12px",
+                    }}>
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#dc2626" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: 1 }}>
+                        <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+                      </svg>
+                      <span style={{ fontSize: 12, color: "#dc2626", lineHeight: 1.4 }}>{sheetsError}</span>
+                    </div>
                   )}
                 </div>
 
-                {/* Preview of first selected sheet */}
-                {selectedSheets.length > 0 && (
-                  <DataPreview rows={previewRows} columns={columns} />
+                {sheetsRows && (
+                  <>
+                    <div style={{
+                      display: "flex", alignItems: "center", gap: 8,
+                      background: "#f0fdf4", border: "1.5px solid #86efac",
+                      borderRadius: 8, padding: "10px 14px",
+                    }}>
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#16a34a" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                        <polyline points="20 6 9 17 4 12"/>
+                      </svg>
+                      <span style={{ fontSize: 13, fontWeight: 600, color: "#16a34a" }}>
+                        {sheetsRows.length} Zeilen · {columns.length} Spalten geladen
+                      </span>
+                    </div>
+                    <DataPreview rows={previewRows} columns={columns} />
+                    <button
+                      onClick={() => setStep(3)}
+                      style={{ ...primaryBtn }}
+                    >
+                      Weiter zum Mapping →
+                    </button>
+                  </>
                 )}
-
-                <div style={{ display: "flex", gap: 8 }}>
-                  <button onClick={() => fileRef.current.click()} style={ghostBtn}>Andere Datei</button>
-                  <button
-                    onClick={() => {
-                      if (selectedSheets.length > 0) loadColumnsFrom(workbook, selectedSheets[0]);
-                      setStep(3);
-                    }}
-                    disabled={selectedSheets.length === 0}
-                    style={{ ...primaryBtn, flex: 1, background: selectedSheets.length === 0 ? "#9ca3af" : "#2563eb" }}
-                  >
-                    Weiter zum Mapping →
-                  </button>
-                </div>
               </div>
             )}
           </div>
@@ -385,9 +550,11 @@ export default function GenerateModal({ templates, onClose }) {
           <div>
             <h3 style={h3}>Spalten zuordnen</h3>
             <p style={sub}>
-              {selectedSheets.length > 1
-                ? `Gilt für alle ${selectedSheets.length} Tabellenblätter`
-                : `Blatt: ${selectedSheets[0]}`
+              {dataSource === "sheets"
+                ? `Google Sheets · ${sheetsRows?.length || 0} Zeilen`
+                : selectedSheets.length > 1
+                  ? `Gilt für alle ${selectedSheets.length} Tabellenblätter`
+                  : `Blatt: ${selectedSheets[0]}`
               }
             </p>
 
@@ -407,7 +574,7 @@ export default function GenerateModal({ templates, onClose }) {
                       <div style={{ padding: "10px 12px", background: "#f9fafb" }}>
                         <label style={labelStyle}>
                           <code style={{ background: "#eff6ff", color: "#2563eb", padding: "2px 6px", borderRadius: 4, fontSize: 11 }}>{`{{${p}}}`}</code>
-                          <span style={{ color: "#16a34a", marginLeft: 6, fontSize: 10 }}>→ Excel-Spalte</span>
+                          <span style={{ color: "#16a34a", marginLeft: 6, fontSize: 10 }}>→ Spalte</span>
                         </label>
                         <select value={mapping[p] || ""} onChange={e => setMapping(m => ({ ...m, [p]: e.target.value }))} style={{ ...inputStyle, background: "#fff" }}>
                           <option value="">(nicht zuordnen)</option>
