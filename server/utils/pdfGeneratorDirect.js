@@ -67,6 +67,15 @@ function resolveContent(content, recipient, mapping, conditions = {}) {
   });
 }
 
+// NFD-decompose → strip combining diacritics → strip remaining non-Latin-1
+// Needed for StandardFonts.Helvetica (WinAnsi encoding, max U+00FF)
+function sanitizeWinAnsi(text) {
+  return text
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^\x00-\xff]/g, "");
+}
+
 function hexToRgb(hex) {
   const h = (hex || "#000000").replace("#", "").padEnd(6, "0");
   return rgb(
@@ -107,7 +116,8 @@ export async function generatePdfDirect(recipients, template, mapping, condition
   pdfDoc.registerFontkit(fontkit);
 
   // Pre-embed every font used in this template (once per document)
-  const embeddedFonts = new Map();
+  const embeddedFonts   = new Map();
+  const standardFontKeys = new Set(); // tracks keys that use WinAnsi Helvetica fallback
   for (const field of fields) {
     const name = field.font || "LiebeHeide";
     if (embeddedFonts.has(name)) continue;
@@ -119,8 +129,9 @@ export async function generatePdfDirect(recipients, template, mapping, condition
         continue;
       }
     }
-    // Fallback: Helvetica (built into every PDF viewer)
+    // Fallback: Helvetica (WinAnsi — cannot encode chars outside Latin-1)
     embeddedFonts.set(name, await pdfDoc.embedFont(StandardFonts.Helvetica));
+    standardFontKeys.add(name);
   }
 
   for (let i = 0; i < recipients.length; i++) {
@@ -149,7 +160,11 @@ export async function generatePdfDirect(recipients, template, mapping, condition
       const maxWidthPt  = (field.width / 100) * W_pt;
       const yTopPt      = (field.y     / 100) * H_pt;
 
-      const lines = wrapText(font, text, fontSizePt, maxWidthPt);
+      // Sanitize for WinAnsi fonts to prevent encoding errors on special chars (e.g. ć, ü)
+      const safeText = standardFontKeys.has(field.font || "LiebeHeide")
+        ? sanitizeWinAnsi(text)
+        : text;
+      const lines = wrapText(font, safeText, fontSizePt, maxWidthPt);
       for (let li = 0; li < lines.length; li++) {
         // pdf-lib: origin bottom-left, y increases upward
         const yPt = H_pt - yTopPt - fontSizePt - li * lineHtPt;

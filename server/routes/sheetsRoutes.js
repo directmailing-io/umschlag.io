@@ -58,4 +58,34 @@ router.get("/load", async (req, res) => {
   }
 });
 
+// GET /api/sheets/xlsx?url=... — returns raw XLSX bytes so the client can parse all sheets
+router.get("/xlsx", async (req, res) => {
+  try {
+    const { url } = req.query;
+    if (!url) return res.status(400).json({ error: "Keine URL angegeben" });
+
+    const match = url.match(/\/d\/([a-zA-Z0-9-_]+)/);
+    if (!match) return res.status(400).json({ error: "Ungültige Google Sheets URL" });
+
+    const sheetId = match[1];
+    const xlsxUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=xlsx`;
+
+    const response = await fetch(xlsxUrl);
+    const ct = response.headers.get("content-type") || "";
+
+    if (!response.ok || ct.includes("text/html")) {
+      return res.status(400).json({
+        error: "Tabelle nicht zugänglich. Bitte stelle sicher, dass die Tabelle öffentlich geteilt ist (Ansicht für alle mit Link).",
+      });
+    }
+
+    const buf = await response.arrayBuffer();
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.send(Buffer.from(buf));
+  } catch (err) {
+    console.error("Sheets XLSX Error:", err);
+    res.status(500).json({ error: "Serverfehler beim Laden der Tabelle" });
+  }
+});
+
 export default router;

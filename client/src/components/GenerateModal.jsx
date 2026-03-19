@@ -18,13 +18,12 @@ export default function GenerateModal({ templates, onClose }) {
   const [selectedTemplate, setTemplate]     = useState(null);
   // Data source: "excel" | "sheets"
   const [dataSource, setDataSource]         = useState("excel");
-  // Excel
+  // Shared workbook (populated by either Excel upload OR Google Sheets XLSX fetch)
   const [workbook, setWorkbook]             = useState(null);
   const [selectedSheets, setSelectedSheets] = useState([]);
   const [sheetRowCounts, setSheetRowCounts] = useState({});
-  // Google Sheets
+  // Google Sheets UI state
   const [sheetsUrl, setSheetsUrl]           = useState("");
-  const [sheetsRows, setSheetsRows]         = useState(null);   // null = not loaded yet
   const [sheetsLoading, setSheetsLoading]   = useState(false);
   const [sheetsError, setSheetsError]       = useState("");
   // columns/rows come from first selected sheet — used for mapping + preview
@@ -33,7 +32,7 @@ export default function GenerateModal({ templates, onClose }) {
   const [mapping, setMapping]               = useState({});
   // conditions: { [placeholderKey]: { rules: [{operator,when,then}], useDefault, default } }
   const [conditions, setConditions]         = useState({});
-  const [expandedCondition, setExpandedCondition] = useState(null); // key of open accordion
+  const [expandedCondition, setExpandedCondition] = useState(null);
   const [filename, setFilename]             = useState("umschlaege");
   const [jobs, setJobs]                     = useState([]);
   const [generating, setGenerating]         = useState(false);
@@ -47,12 +46,20 @@ export default function GenerateModal({ templates, onClose }) {
 
   const placeholders = selectedTemplate ? extractPlaceholders(selectedTemplate) : [];
   const mappedCount  = Object.values(mapping).filter(Boolean).length;
-  const totalRows    = dataSource === "sheets"
-    ? (sheetsRows?.length || 0)
-    : selectedSheets.reduce((s, n) => s + (sheetRowCounts[n] || 0), 0);
-  const dataReady    = dataSource === "sheets"
-    ? sheetsRows !== null && sheetsRows.length > 0
-    : workbook !== null && selectedSheets.length > 0;
+  const totalRows    = selectedSheets.reduce((s, n) => s + (sheetRowCounts[n] || 0), 0);
+  const dataReady    = workbook !== null && selectedSheets.length > 0;
+
+  // Clears shared workbook data — called when switching tabs
+  function switchSource(src) {
+    if (src === dataSource) return;
+    setDataSource(src);
+    setWorkbook(null);
+    setSelectedSheets([]);
+    setSheetRowCounts({});
+    setColumns([]);
+    setPreviewRows([]);
+    setSheetsError("");
+  }
 
   function selectTemplate(t) {
     setTemplate(t);
@@ -143,25 +150,25 @@ export default function GenerateModal({ templates, onClose }) {
     if (!url) return;
     setSheetsLoading(true);
     setSheetsError("");
-    setSheetsRows(null);
+    setWorkbook(null);
+    setSelectedSheets([]);
     try {
-      const res = await fetch(`${API}/sheets/load?url=${encodeURIComponent(url)}`);
-      const body = await res.json();
-      if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
-      if (!Array.isArray(body) || body.length === 0) throw new Error("Keine Daten gefunden. Ist die Tabelle öffentlich und nicht leer?");
-      setSheetsRows(body);
-      const cols = Object.keys(body[0]);
-      setColumns(cols);
-      setPreviewRows(body.slice(0, 4));
-      setMapping(prev => {
-        const next = { ...prev };
-        Object.keys(next).forEach(key => {
-          if (next[key]) return;
-          const match = cols.find(c => c.toLowerCase() === key.toLowerCase());
-          if (match) next[key] = match;
-        });
-        return next;
-      });
+      const res = await fetch(`${API}/sheets/xlsx?url=${encodeURIComponent(url)}`);
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || `HTTP ${res.status}`);
+      }
+      const buf = await res.arrayBuffer();
+      const wb = XLSX.read(buf, { type: "array" });
+      setWorkbook(wb);
+      const counts = {};
+      for (const name of wb.SheetNames) {
+        const data = XLSX.utils.sheet_to_json(wb.Sheets[name], { defval: "" });
+        counts[name] = data.length;
+      }
+      setSheetRowCounts(counts);
+      setSelectedSheets(wb.SheetNames);
+      loadColumnsFrom(wb, wb.SheetNames[0]);
     } catch (err) {
       setSheetsError(err.message);
     } finally {
@@ -187,26 +194,22 @@ export default function GenerateModal({ templates, onClose }) {
     setGenerating(true);
     setError("");
 
-    // Build unified job list
-    const initialJobs = dataSource === "sheets"
-      ? [{ sheetName: "Google Sheets", jobId: null, progress: 0, total: sheetsRows.length, status: "pending", filename: filename || "umschlaege" }]
-      : selectedSheets.map(sn => ({
-          sheetName: sn,
-          jobId:     null,
-          progress:  0,
-          total:     sheetRowCounts[sn] || 0,
-          status:    "pending",
-          filename:  selectedSheets.length === 1
-            ? (filename || "umschlaege")
-            : `${filename || "umschlaege"}_${sn}`,
-        }));
+    // Build unified job list — both Excel and Google Sheets data lives in workbook
+    const initialJobs = selectedSheets.map(sn => ({
+      sheetName: sn,
+      jobId:     null,
+      progress:  0,
+      total:     sheetRowCounts[sn] || 0,
+      status:    "pending",
+      filename:  selectedSheets.length === 1
+        ? (filename || "umschlaege")
+        : `${filename || "umschlaege"}_${sn}`,
+    }));
     setJobs(initialJobs);
 
     // Start all jobs and subscribe to SSE
     for (const job of initialJobs) {
-      const sheetRows = dataSource === "sheets"
-        ? sheetsRows
-        : XLSX.utils.sheet_to_json(workbook.Sheets[job.sheetName], { defval: "" });
+      const sheetRows = XLSX.utils.sheet_to_json(workbook.Sheets[job.sheetName], { defval: "" });
       let jobId;
       try {
         const conditionsPayload = buildConditionsPayload();
@@ -278,14 +281,31 @@ export default function GenerateModal({ templates, onClose }) {
 
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)",
-      display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }}>
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-      <div style={{ background: "#fff", borderRadius: 16, width: 620, maxHeight: "90vh",
-        overflow: "auto", padding: "32px 36px", position: "relative",
+      display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000,
+      padding: "8px" }}>
+      <style>{`
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .gm-close { position: absolute; top: 16px; right: 16px; background: none; border: none;
+          font-size: 22px; cursor: pointer; color: #9ca3af; line-height: 1; padding: 4px; }
+        .gm-close:hover { color: #374151; }
+        .gm-input, .gm-select { min-height: 44px; }
+        .gm-btn-primary { min-height: 44px; }
+        .gm-btn-ghost   { min-height: 44px; }
+        @media (max-width: 480px) {
+          .gm-modal { border-radius: 12px !important; padding: 20px 16px !important; }
+          .gm-step-label { display: none; }
+          .gm-cond-row { flex-direction: column !important; align-items: flex-start !important; }
+          .gm-url-row { flex-direction: column !important; }
+          .gm-url-row input { width: 100% !important; }
+          .gm-url-row button { width: 100% !important; }
+        }
+      `}</style>
+      <div className="gm-modal" style={{ background: "#fff", borderRadius: 16,
+        width: "min(620px, 100%)", maxHeight: "min(90dvh, calc(100dvh - 16px))",
+        overflow: "auto", padding: "clamp(20px, 5%, 36px)", position: "relative",
         boxShadow: "0 24px 64px rgba(0,0,0,0.22)" }}>
 
-        <button onClick={onClose} style={{ position: "absolute", top: 18, right: 18,
-          background: "none", border: "none", fontSize: 22, cursor: "pointer", color: "#9ca3af" }}>✕</button>
+        <button onClick={onClose} className="gm-close">✕</button>
 
         <StepBar step={step} />
 
@@ -337,9 +357,9 @@ export default function GenerateModal({ templates, onClose }) {
               ].map(tab => (
                 <button
                   key={tab.id}
-                  onClick={() => setDataSource(tab.id)}
+                  onClick={() => switchSource(tab.id)}
                   style={{
-                    flex: 1, padding: "8px 12px", borderRadius: 7,
+                    flex: 1, padding: "8px 12px", borderRadius: 7, minHeight: 40,
                     border: "none", cursor: "pointer", fontSize: 13, fontWeight: 600,
                     background: dataSource === tab.id ? "#fff" : "transparent",
                     color: dataSource === tab.id ? "#2563eb" : "#6b7280",
@@ -420,13 +440,13 @@ export default function GenerateModal({ templates, onClose }) {
                           const count   = sheetRowCounts[name] || 0;
                           return (
                             <label key={name} style={{
-                              display: "flex", alignItems: "center", gap: 10, padding: "9px 12px",
+                              display: "flex", alignItems: "center", gap: 10, padding: "10px 12px",
                               borderRadius: 8, border: `1.5px solid ${checked ? "#2563eb" : "#e5e7eb"}`,
-                              background: checked ? "#eff6ff" : "#f9fafb", cursor: "pointer",
+                              background: checked ? "#eff6ff" : "#f9fafb", cursor: "pointer", minHeight: 44,
                             }}>
                               <input type="checkbox" checked={checked}
                                 onChange={() => toggleSheet(name)}
-                                style={{ width: 15, height: 15, accentColor: "#2563eb" }} />
+                                style={{ width: 16, height: 16, accentColor: "#2563eb", flexShrink: 0 }} />
                               <span style={{ fontWeight: 600, fontSize: 13, flex: 1 }}>{name}</span>
                               <span style={{ fontSize: 12, color: "#6b7280" }}>{count} Zeilen</span>
                             </label>
@@ -463,29 +483,33 @@ export default function GenerateModal({ templates, onClose }) {
             {/* ── Google Sheets panel ── */}
             {dataSource === "sheets" && (
               <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                {/* URL row */}
                 <div>
                   <label style={labelStyle}>Google Sheets URL</label>
-                  <div style={{ display: "flex", gap: 8 }}>
+                  <div className="gm-url-row" style={{ display: "flex", gap: 8 }}>
                     <input
+                      className="gm-input"
                       type="url"
                       value={sheetsUrl}
-                      onChange={e => { setSheetsUrl(e.target.value); setSheetsError(""); setSheetsRows(null); }}
+                      onChange={e => { setSheetsUrl(e.target.value); setSheetsError(""); setWorkbook(null); setSelectedSheets([]); }}
                       onKeyDown={e => e.key === "Enter" && loadGoogleSheets()}
                       placeholder="https://docs.google.com/spreadsheets/d/…"
                       style={{
-                        ...inputStyle, flex: 1,
-                        borderColor: sheetsError ? "#ef4444" : sheetsRows ? "#86efac" : "#e5e7eb",
-                        background: sheetsRows ? "#f0fdf4" : "#fff",
+                        ...inputStyle,
+                        borderColor: sheetsError ? "#ef4444" : workbook ? "#86efac" : "#e5e7eb",
+                        background: workbook ? "#f0fdf4" : "#fff",
+                        minWidth: 0,
                       }}
                     />
                     <button
+                      className="gm-btn-primary"
                       onClick={loadGoogleSheets}
                       disabled={!sheetsUrl.trim() || sheetsLoading}
                       style={{
-                        ...primaryBtn,
-                        padding: "0 16px", minWidth: 80, flexShrink: 0,
+                        ...primaryBtn, width: "auto",
+                        padding: "0 18px", flexShrink: 0,
                         background: !sheetsUrl.trim() || sheetsLoading ? "#9ca3af" : "#2563eb",
-                        display: "flex", alignItems: "center", gap: 6,
+                        display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
                       }}
                     >
                       {sheetsLoading ? (
@@ -501,7 +525,7 @@ export default function GenerateModal({ templates, onClose }) {
                     </button>
                   </div>
                   <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 5 }}>
-                    Die Tabelle muss öffentlich zugänglich sein (Ansicht für alle mit Link).
+                    Die Tabelle muss öffentlich zugänglich sein (Ansicht für alle mit Link). Alle Tabellenblätter werden geladen.
                   </div>
                   {sheetsError && (
                     <div style={{
@@ -517,8 +541,9 @@ export default function GenerateModal({ templates, onClose }) {
                   )}
                 </div>
 
-                {sheetsRows && (
-                  <>
+                {/* After loading: same sheet-selector UI as Excel */}
+                {workbook && (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
                     <div style={{
                       display: "flex", alignItems: "center", gap: 8,
                       background: "#f0fdf4", border: "1.5px solid #86efac",
@@ -528,17 +553,65 @@ export default function GenerateModal({ templates, onClose }) {
                         <polyline points="20 6 9 17 4 12"/>
                       </svg>
                       <span style={{ fontSize: 13, fontWeight: 600, color: "#16a34a" }}>
-                        {sheetsRows.length} Zeilen · {columns.length} Spalten geladen
+                        {workbook.SheetNames.length} Tabellenblatt/-blätter · {totalRows} Zeilen geladen
                       </span>
                     </div>
-                    <DataPreview rows={previewRows} columns={columns} />
-                    <button
-                      onClick={() => setStep(3)}
-                      style={{ ...primaryBtn }}
-                    >
-                      Weiter zum Mapping →
-                    </button>
-                  </>
+
+                    <div>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                        <label style={labelStyle}>Tabellenblätter auswählen</label>
+                        <button
+                          onClick={() => setSelectedSheets(
+                            selectedSheets.length === workbook.SheetNames.length ? [] : workbook.SheetNames
+                          )}
+                          style={{ fontSize: 11, color: "#2563eb", background: "none", border: "none", cursor: "pointer", fontWeight: 600 }}
+                        >
+                          {selectedSheets.length === workbook.SheetNames.length ? "Alle abwählen" : "Alle auswählen"}
+                        </button>
+                      </div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                        {workbook.SheetNames.map(name => {
+                          const checked = selectedSheets.includes(name);
+                          const count   = sheetRowCounts[name] || 0;
+                          return (
+                            <label key={name} style={{
+                              display: "flex", alignItems: "center", gap: 10, padding: "9px 12px",
+                              borderRadius: 8, border: `1.5px solid ${checked ? "#2563eb" : "#e5e7eb"}`,
+                              background: checked ? "#eff6ff" : "#f9fafb", cursor: "pointer", minHeight: 44,
+                            }}>
+                              <input type="checkbox" checked={checked}
+                                onChange={() => toggleSheet(name)}
+                                style={{ width: 16, height: 16, accentColor: "#2563eb", flexShrink: 0 }} />
+                              <span style={{ fontWeight: 600, fontSize: 13, flex: 1 }}>{name}</span>
+                              <span style={{ fontSize: 12, color: "#6b7280" }}>{count} Zeilen</span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                      {selectedSheets.length === 0 && (
+                        <div style={{ fontSize: 12, color: "#dc2626", marginTop: 6 }}>Mindestens ein Blatt auswählen</div>
+                      )}
+                    </div>
+
+                    {selectedSheets.length > 0 && (
+                      <DataPreview rows={previewRows} columns={columns} />
+                    )}
+
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <button onClick={() => { setWorkbook(null); setSelectedSheets([]); setSheetsError(""); }} style={ghostBtn}>Andere URL</button>
+                      <button
+                        onClick={() => {
+                          if (selectedSheets.length > 0) loadColumnsFrom(workbook, selectedSheets[0]);
+                          setStep(3);
+                        }}
+                        disabled={selectedSheets.length === 0}
+                        className="gm-btn-primary"
+                        style={{ ...primaryBtn, flex: 1, background: selectedSheets.length === 0 ? "#9ca3af" : "#2563eb" }}
+                      >
+                        Weiter zum Mapping →
+                      </button>
+                    </div>
+                  </div>
                 )}
               </div>
             )}
@@ -599,67 +672,75 @@ export default function GenerateModal({ templates, onClose }) {
 
                       {/* Conditions panel */}
                       {isOpen && (
-                        <div style={{ padding: "12px", background: "#f8fafc", borderTop: "1px solid #e5e7eb" }}>
-                          <p style={{ margin: "0 0 10px", fontSize: 12, color: "#6b7280" }}>
-                            Wenn der Zellwert eine Bedingung erfüllt, wird er durch den angegebenen Wert ersetzt.
-                            Vergleiche ignorieren Groß-/Kleinschreibung.
+                        <div style={{ padding: "14px", background: "#f8fafc", borderTop: "1px solid #e5e7eb" }}>
+                          <p style={{ margin: "0 0 12px", fontSize: 12, color: "#6b7280", lineHeight: 1.5 }}>
+                            Ersetze den Zellwert basierend auf Bedingungen. Groß-/Kleinschreibung wird ignoriert.
                           </p>
 
                           {cond.rules.map((rule, ri) => (
-                            <div key={ri} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 7, flexWrap: "wrap" }}>
-                              <span style={{ fontSize: 12, color: "#6b7280", whiteSpace: "nowrap" }}>Wenn</span>
-                              <input
-                                value={rule.when}
-                                onChange={e => updateRule(p, ri, { when: e.target.value })}
-                                placeholder="Wert…"
-                                style={{ ...condInput, flex: 1, minWidth: 80 }}
-                              />
-                              <select
-                                value={rule.operator}
-                                onChange={e => updateRule(p, ri, { operator: e.target.value })}
-                                style={condSelect}
-                              >
-                                <option value="equals">ist gleich</option>
-                                <option value="contains">enthält</option>
-                                <option value="startsWith">beginnt mit</option>
-                                <option value="endsWith">endet mit</option>
-                              </select>
-                              <span style={{ fontSize: 12, color: "#6b7280" }}>→</span>
-                              <input
-                                value={rule.then}
-                                onChange={e => updateRule(p, ri, { then: e.target.value })}
-                                placeholder="Ausgabe…"
-                                style={{ ...condInput, flex: 1, minWidth: 80 }}
-                              />
-                              {cond.rules.length > 1 && (
-                                <button onClick={() => removeRule(p, ri)} style={condRemoveBtn} title="Entfernen">✕</button>
-                              )}
+                            <div key={ri} style={{
+                              background: "#fff", border: "1.5px solid #e2e8f0",
+                              borderRadius: 8, padding: "10px 12px", marginBottom: 8,
+                              display: "flex", flexDirection: "column", gap: 8,
+                            }}>
+                              {/* WENN row */}
+                              <div className="gm-cond-row" style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                                <span style={{ fontSize: 11, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.06em", minWidth: 74, flexShrink: 0 }}>Wenn Wert</span>
+                                <select
+                                  value={rule.operator}
+                                  onChange={e => updateRule(p, ri, { operator: e.target.value })}
+                                  style={{ ...condSelect, flexShrink: 0 }}
+                                >
+                                  <option value="equals">ist gleich</option>
+                                  <option value="contains">enthält</option>
+                                  <option value="startsWith">beginnt mit</option>
+                                  <option value="endsWith">endet mit</option>
+                                </select>
+                                <input
+                                  value={rule.when}
+                                  onChange={e => updateRule(p, ri, { when: e.target.value })}
+                                  placeholder='z.B. "DE"'
+                                  style={{ ...condInput, flex: 1, minWidth: 80 }}
+                                />
+                              </div>
+                              {/* AUSGABE row */}
+                              <div className="gm-cond-row" style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                                <span style={{ fontSize: 11, fontWeight: 700, color: "#2563eb", textTransform: "uppercase", letterSpacing: "0.06em", minWidth: 74, flexShrink: 0 }}>→ Ausgabe</span>
+                                <input
+                                  value={rule.then}
+                                  onChange={e => updateRule(p, ri, { then: e.target.value })}
+                                  placeholder='z.B. "Deutschland"'
+                                  style={{ ...condInput, flex: 1, minWidth: 80 }}
+                                />
+                                {cond.rules.length > 1 && (
+                                  <button onClick={() => removeRule(p, ri)} style={condRemoveBtn} title="Entfernen">✕</button>
+                                )}
+                              </div>
                             </div>
                           ))}
 
-                          <button onClick={() => addRule(p)} style={{ fontSize: 12, color: "#2563eb", background: "none", border: "1px dashed #93c5fd", borderRadius: 6, padding: "5px 10px", cursor: "pointer", marginBottom: 10 }}>
-                            + Weitere Bedingung
+                          <button onClick={() => addRule(p)} style={{ fontSize: 12, color: "#2563eb", background: "none", border: "1px dashed #93c5fd", borderRadius: 6, padding: "7px 12px", cursor: "pointer", marginBottom: 12, width: "100%" }}>
+                            + Weitere Bedingung hinzufügen
                           </button>
 
-                          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                            <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12, color: "#6b7280", cursor: "pointer" }}>
+                          {/* Sonst / Fallback */}
+                          <div style={{ borderTop: "1px solid #e5e7eb", paddingTop: 10 }}>
+                            <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "#6b7280", cursor: "pointer", marginBottom: cond.useDefault ? 8 : 0 }}>
                               <input
                                 type="checkbox"
                                 checked={cond.useDefault}
                                 onChange={e => setCondition(p, { useDefault: e.target.checked })}
-                                style={{ accentColor: "#2563eb" }}
+                                style={{ width: 15, height: 15, accentColor: "#2563eb", flexShrink: 0 }}
                               />
-                              Sonst:
+                              <span><strong>Sonst:</strong> Standardwert verwenden (statt Originalwert)</span>
                             </label>
-                            {cond.useDefault ? (
+                            {cond.useDefault && (
                               <input
                                 value={cond.default}
                                 onChange={e => setCondition(p, { default: e.target.value })}
-                                placeholder="Standardwert (leer = Feld ausblenden)"
-                                style={{ ...condInput, flex: 1, minWidth: 150 }}
+                                placeholder="Standardwert (leer lassen = Feld ausblenden)"
+                                style={{ ...condInput, width: "100%", boxSizing: "border-box" }}
                               />
-                            ) : (
-                              <span style={{ fontSize: 11, color: "#9ca3af", fontStyle: "italic" }}>Originalwert behalten</span>
                             )}
                           </div>
                         </div>
@@ -687,6 +768,7 @@ export default function GenerateModal({ templates, onClose }) {
             <p style={sub}>
               {totalRows} Umschläge · {selectedSheets.length} PDF{selectedSheets.length > 1 ? "s" : ""}
               {" · "}<strong>{selectedTemplate.name}</strong>
+              {dataSource === "sheets" && <span style={{ color: "#6b7280", fontWeight: 400 }}> (Google Sheets)</span>}
             </p>
 
             {/* Summary */}
@@ -709,8 +791,8 @@ export default function GenerateModal({ templates, onClose }) {
               <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                 <input value={filename} onChange={e => setFilename(e.target.value)}
                   style={{ ...inputStyle, flex: 1 }} placeholder="umschlaege" />
-                <span style={{ fontSize: 13, color: "#9ca3af", whiteSpace: "nowrap" }}>
-                  {selectedSheets.length > 1 ? "_Blattname.pdf" : ".pdf"}
+                <span style={{ fontSize: 13, color: "#9ca3af", whiteSpace: "nowrap", flexShrink: 0 }}>
+                  {selectedSheets.length > 1 ? "_Tabellenblatt.pdf" : ".pdf"}
                 </span>
               </div>
             </div>
@@ -782,21 +864,21 @@ function JobProgress({ job }) {
 }
 
 function StepBar({ step }) {
-  const steps = [["1","Vorlage"],["2","Excel"],["3","Mapping"],["4","PDF"]];
+  const steps = [["1","Vorlage"],["2","Daten"],["3","Mapping"],["4","PDF"]];
   return (
-    <div style={{ display: "flex", gap: 8, marginBottom: 28 }}>
+    <div style={{ display: "flex", gap: 6, marginBottom: 24 }}>
       {steps.map(([n, label], i) => {
         const done = step > i + 1, active = step === i + 1;
         return (
           <div key={n} style={{ flex: 1, textAlign: "center" }}>
-            <div style={{ width: 28, height: 28, borderRadius: "50%", margin: "0 auto 4px",
+            <div style={{ width: 30, height: 30, borderRadius: "50%", margin: "0 auto 4px",
               background: done ? "#16a34a" : active ? "#2563eb" : "#e5e7eb",
               color: done || active ? "#fff" : "#9ca3af",
               display: "flex", alignItems: "center", justifyContent: "center",
               fontSize: 12, fontWeight: 700 }}>
               {done ? "✓" : n}
             </div>
-            <div style={{ fontSize: 10, color: active ? "#2563eb" : "#9ca3af", fontWeight: active ? 700 : 400 }}>{label}</div>
+            <div className="gm-step-label" style={{ fontSize: 10, color: active ? "#2563eb" : "#9ca3af", fontWeight: active ? 700 : 400 }}>{label}</div>
           </div>
         );
       })}
@@ -829,14 +911,14 @@ function DataPreview({ rows, columns }) {
   );
 }
 
-const condInput     = { padding: "6px 9px", border: "1.5px solid #e2e8f0", borderRadius: 7, fontSize: 12, outline: "none", background: "#fff", color: "#1e293b" };
-const condSelect    = { padding: "6px 8px", border: "1.5px solid #e2e8f0", borderRadius: 7, fontSize: 12, background: "#fff", color: "#1e293b", cursor: "pointer" };
-const condRemoveBtn = { padding: "4px 8px", border: "1.5px solid #fca5a5", borderRadius: 6, background: "#fff", color: "#dc2626", cursor: "pointer", fontSize: 12, flexShrink: 0 };
+const condInput     = { padding: "8px 10px", border: "1.5px solid #e2e8f0", borderRadius: 7, fontSize: 13, outline: "none", background: "#fff", color: "#1e293b", minHeight: 40 };
+const condSelect    = { padding: "8px 10px", border: "1.5px solid #e2e8f0", borderRadius: 7, fontSize: 13, background: "#fff", color: "#1e293b", cursor: "pointer", minHeight: 40 };
+const condRemoveBtn = { padding: "6px 10px", border: "1.5px solid #fca5a5", borderRadius: 6, background: "#fff", color: "#dc2626", cursor: "pointer", fontSize: 13, flexShrink: 0, minHeight: 36 };
 
-const h3 = { margin: "0 0 6px", fontSize: 18, fontWeight: 700, color: "#111" };
+const h3 = { margin: "0 0 6px", fontSize: "clamp(16px, 4vw, 18px)", fontWeight: 700, color: "#111" };
 const sub = { margin: "0 0 20px", fontSize: 13, color: "#6b7280" };
 const tagStyle = { padding: "2px 8px", borderRadius: 20, background: "#eff6ff", color: "#2563eb", fontSize: 11, fontWeight: 600 };
 const labelStyle = { display: "block", fontSize: 10.5, fontWeight: 700, color: "#6b7280", marginBottom: 5, textTransform: "uppercase", letterSpacing: "0.06em" };
-const inputStyle = { width: "100%", padding: "8px 12px", border: "1.5px solid #e5e7eb", borderRadius: 8, fontSize: 13, outline: "none", boxSizing: "border-box", background: "#fff" };
-const primaryBtn = { padding: "10px 20px", background: "#2563eb", color: "#fff", border: "none", borderRadius: 10, fontWeight: 700, fontSize: 14, cursor: "pointer", display: "block", width: "100%", textAlign: "center" };
-const ghostBtn   = { padding: "10px 16px", background: "#f3f4f6", color: "#374151", border: "none", borderRadius: 10, fontWeight: 600, fontSize: 13, cursor: "pointer" };
+const inputStyle = { width: "100%", padding: "10px 12px", border: "1.5px solid #e5e7eb", borderRadius: 8, fontSize: 14, outline: "none", boxSizing: "border-box", background: "#fff", minHeight: 44 };
+const primaryBtn = { padding: "12px 20px", background: "#2563eb", color: "#fff", border: "none", borderRadius: 10, fontWeight: 700, fontSize: 14, cursor: "pointer", display: "block", width: "100%", textAlign: "center", minHeight: 48 };
+const ghostBtn   = { padding: "12px 16px", background: "#f3f4f6", color: "#374151", border: "none", borderRadius: 10, fontWeight: 600, fontSize: 13, cursor: "pointer", minHeight: 48 };
